@@ -8,6 +8,7 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const crypto = require('crypto');
+const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -22,6 +23,7 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
+app.use(express.static(path.join(__dirname, 'public')));
 
 // Rate limiting
 const limiter = rateLimit({
@@ -109,6 +111,47 @@ db.serialize(() => {
         value TEXT NOT NULL,
         reason TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+
+    // Getkey requests table
+    db.run(`CREATE TABLE IF NOT EXISTS getkey_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        hwid TEXT,
+        executor TEXT,
+        status TEXT DEFAULT 'pending',
+        work_status TEXT DEFAULT 'pending',
+        work_type TEXT,
+        work_proof TEXT,
+        ip_address TEXT,
+        user_agent TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+
+    // Work links table
+    db.run(`CREATE TABLE IF NOT EXISTS work_links (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        request_id INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        url TEXT NOT NULL,
+        title TEXT,
+        description TEXT,
+        is_completed INTEGER DEFAULT 0,
+        completed_at DATETIME,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (request_id) REFERENCES getkey_requests(id)
+    )`);
+
+    // Claimed keys from getkey
+    db.run(`CREATE TABLE IF NOT EXISTS claimed_keys (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        request_id INTEGER NOT NULL,
+        key_string TEXT NOT NULL,
+        is_used INTEGER DEFAULT 0,
+        used_at DATETIME,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (request_id) REFERENCES getkey_requests(id)
     )`);
 });
 
@@ -374,6 +417,292 @@ app.post('/api/status', authenticateToken, (req, res) => {
             });
         }
     );
+});
+
+// ==========================================
+-- GETKEY / WORK.LINK SYSTEM
+-- ==========================================
+
+// Create getkey request
+app.post('/api/getkey/request', async (req, res) => {
+    const { session_id, hwid, executor } = req.body;
+
+    if (!session_id) {
+        return res.json({ success: false, message: 'Session ID is required' });
+    }
+
+    // Check if session already has a pending/approved request
+    db.get(
+        'SELECT * FROM getkey_requests WHERE session_id = ? AND status IN (?, ?)',
+        [session_id, 'pending', 'approved'],
+        async (err, existing) => {
+            if (err) {
+                return res.status(500).json({ success: false, message: 'Database error' });
+            }
+
+            if (existing && existing.status === 'approved') {
+                // Return existing approved key if not yet claimed
+                db.get(
+                    'SELECT * FROM claimed_keys WHERE request_id = ? AND is_used = 0',
+                    [existing.id],
+                    (err, claimed) => {
+                        if (claimed) {
+                            return res.json({
+                                success: true,
+                                status: 'approved',
+                                message: 'Key already approved',
+                                key: claimed.key_string
+                            });
+                        }
+                    }
+                );
+            }
+
+            if (existing && existing.status === 'pending') {
+                return res.json({
+                    success: true,
+                    status: 'pending',
+                    message: 'Request already pending',
+                    request_id: existing.id
+                });
+            }
+
+            // Create new request
+            const workTasks = [
+                { type: 'discord', url: 'https://discord.gg/your-server', title: 'Join Discord', description: 'Join our Discord server' },
+                { type: 'youtube', url: 'https://youtube.com/@your-channel', title: 'Subscribe YouTube', description: 'Subscribe to our channel' },
+                { type: 'telegram', url: 'https://t.me/your-channel', title: 'Join Telegram', description: 'Join our Telegram channel' }
+            ];
+
+            db.run(
+                `INSERT INTO getkey_requests (session_id, hwid, executor, ip_address, user_agent, status) 
+                 VALUES (?, ?, ?, ?, ?, ?)`,
+                [
+                    session_id,
+                    hwid || null,
+                    executor || null,
+                    req.ip || req.connection.remoteAddress,
+                    req.get('user-agent') || null,
+                    'pending'
+                ],
+                function(err) {
+                    if (err) {
+                        return res.status(500).json({ success: false, message: 'Failed to create request' });
+                    }
+
+                    const requestId = this.lastID;
+
+                    // Insert work links
+                    const stmt = db.prepare('INSERT INTO work_links (request_id, type, url, title, description) VALUES (?, ?, ?, ?, ?)');
+                    for (const task of workTasks) {
+                        stmt.run(requestId, task.type, task.url, task.title, task.description);
+                    }
+                    stmt.finalize();
+
+                    // Get work links for this request
+                    db.all(
+                        'SELECT * FROM work_links WHERE request_id = ?',
+                        [requestId],
+                        (err, links) => {
+                            res.json({
+                                success: true,
+                                status: 'pending',
+                                request_id: requestId,
+                                message: 'Complete the tasks below to get your key',
+                                tasks: links
+                            });
+                        }
+                    );
+                }
+            );
+        }
+    );
+});
+
+// Complete work and get key
+app.post('/api/getkey/complete', async (req, res) => {
+    const { session_id, task_proofs } = req.body;
+
+    if (!session_id) {
+        return res.json({ success: false, message: 'Session ID is required' });
+    }
+
+    // Find pending request
+    db.get(
+        'SELECT * FROM getkey_requests WHERE session_id = ? AND status = ?',
+        [session_id, 'pending'],
+        async (err, request) => {
+            if (err || !request) {
+                return res.json({ success: false, message: 'No pending request found' });
+            }
+
+            // Get work links
+            db.all(
+                'SELECT * FROM work_links WHERE request_id = ?',
+                [request.id],
+                async (err, links) => {
+                    if (err || !links || links.length === 0) {
+                        return res.json({ success: false, message: 'No work tasks found' });
+                    }
+
+                    // Validate task proofs (simplified - in production, verify actual completion)
+                    const requiredTypes = links.map(l => l.type);
+                    const providedTypes = task_proofs ? Object.keys(task_proofs) : [];
+                    
+                    const allCompleted = requiredTypes.every(type => 
+                        providedTypes.includes(type) && task_proofs[type] === true
+                    );
+
+                    if (!allCompleted && requiredTypes.length > 0) {
+                        return res.json({
+                            success: false,
+                            message: 'All tasks must be completed',
+                            pending: requiredTypes.filter(t => !providedTypes.includes(t))
+                        });
+                    }
+
+                    // Mark all tasks as completed
+                    const updateStmt = db.prepare('UPDATE work_links SET is_completed = 1, completed_at = ? WHERE request_id = ?');
+                    updateStmt.run(new Date().toISOString(), request.id);
+                    updateStmt.finalize();
+
+                    // Generate key
+                    const keyString = generateKey(32);
+                    const keyHash = hashString(keyString);
+
+                    // Create user if not exists
+                    const username = 'getkey_' + session_id.substring(0, 8);
+                    const email = session_id + '@getkey.local';
+                    const passwordHash = bcrypt.hashSync(uuidv4(), 10);
+
+                    db.get('SELECT id FROM users WHERE username = ?', [username], async (err, user) => {
+                        let userId;
+                        if (user) {
+                            userId = user.id;
+                        } else {
+                            userId = await new Promise((resolve) => {
+                                db.run(
+                                    'INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)',
+                                    [username, email, passwordHash],
+                                    function(err) {
+                                        resolve(this.lastID);
+                                    }
+                                );
+                            });
+                        }
+
+                        // Create key
+                        const expiresAt = new Date();
+                        expiresAt.setDate(expiresAt.getDate() + 30); // 30 days expiry
+
+                        db.run(
+                            'INSERT INTO keys (key_string, user_id, expires_at, rank, max_hwid_uses) VALUES (?, ?, ?, ?, ?)',
+                            [keyHash, userId, expiresAt.toISOString(), 'user', 1],
+                            function(err) {
+                                if (err) {
+                                    return res.status(500).json({ success: false, message: 'Failed to create key' });
+                                }
+
+                                // Save claimed key
+                                db.run(
+                                    'INSERT INTO claimed_keys (request_id, key_string) VALUES (?, ?)',
+                                    [request.id, keyString]
+                                );
+
+                                // Update request status
+                                db.run(
+                                    'UPDATE getkey_requests SET status = ?, work_status = ?, updated_at = ? WHERE id = ?',
+                                    ['approved', 'completed', new Date().toISOString(), request.id]
+                                );
+
+                                // Log
+                                logAttempt(keyString, request.hwid, 'GETKEY_SUCCESS', request.executor, '1.0.0', req, username);
+
+                                res.json({
+                                    success: true,
+                                    status: 'approved',
+                                    message: 'Work completed! Here is your key',
+                                    key: keyString,
+                                    expires_at: expiresAt.toISOString(),
+                                    rank: 'user'
+                                });
+                            }
+                        );
+                    });
+                }
+            );
+        }
+    );
+});
+
+// Check getkey status
+app.get('/api/getkey/status/:sessionId', (req, res) => {
+    const { sessionId } = req.params;
+
+    db.get(
+        'SELECT * FROM getkey_requests WHERE session_id = ? ORDER BY created_at DESC LIMIT 1',
+        [sessionId],
+        (err, request) => {
+            if (err || !request) {
+                return res.json({ success: false, message: 'Request not found' });
+            }
+
+            let keyInfo = null;
+            if (request.status === 'approved') {
+                db.get(
+                    'SELECT * FROM claimed_keys WHERE request_id = ? AND is_used = 0',
+                    [request.id],
+                    (err, claimed) => {
+                        if (claimed) {
+                            keyInfo = { key: claimed.key_string, is_used: claimed.is_used };
+                        }
+                        res.json({
+                            success: true,
+                            status: request.status,
+                            work_status: request.work_status,
+                            key: keyInfo ? keyInfo.key : null
+                        });
+                    }
+                );
+                return;
+            }
+
+            res.json({
+                success: true,
+                status: request.status,
+                work_status: request.work_status
+            });
+        }
+    );
+});
+
+// Admin: Get all getkey requests
+app.get('/api/admin/getkey', authenticateToken, (req, res) => {
+    const { status, limit = 50 } = req.query;
+
+    db.get('SELECT rank FROM users WHERE id = ?', [req.user.user_id], (err, admin) => {
+        if (err || !admin || admin.rank !== 'admin') {
+            return res.status(403).json({ success: false, message: 'Admin access required' });
+        }
+
+        let query = 'SELECT * FROM getkey_requests';
+        const params = [];
+
+        if (status) {
+            query += ' WHERE status = ?';
+            params.push(status);
+        }
+
+        query += ' ORDER BY created_at DESC LIMIT ?';
+        params.push(parseInt(limit));
+
+        db.all(query, params, (err, rows) => {
+            if (err) {
+                return res.status(500).json({ success: false, message: 'Database error' });
+            }
+            res.json({ success: true, requests: rows });
+        });
+    });
 });
 
 // Admin: Generate Key

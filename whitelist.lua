@@ -25,6 +25,8 @@ local CONFIG = {
     TIMEOUT = 15,
     ALLOWED_EXECUTORS = {"Synapse X", "Delta", "Krnl", "Fluxus", "Electron", "Velocity", "Xeno"},
     CHECK_INTERVAL = 300, -- seconds
+    GETKEY_ENABLED = true,
+    GETKEY_URL = "https://your-domain.com/getkey",
 }
 
 -- ==========================================
@@ -221,6 +223,89 @@ function Network:CheckStatus(key, hwid)
 end
 
 -- ==========================================
+-- GETKEY / WORK.LINK SYSTEM
+-- ==========================================
+local Getkey = {}
+
+function Getkey:GenerateSessionId()
+    return Encryption:GenerateHash(tostring(os.time()) .. tostring(math.random(100000, 999999)))
+end
+
+function Getkey:CreateRequest()
+    local sessionId = self:GenerateSessionId()
+    local hwid = HWID:GetHardwareId()
+    local executor = HWID:GetExecutorName()
+    
+    local response, err = Network:Request("/getkey/request", {
+        session_id = sessionId,
+        hwid = hwid,
+        executor = executor
+    })
+    
+    if not response then
+        return nil, err
+    end
+    
+    local success, data = pcall(function()
+        return HttpService:JSONDecode(response.Body)
+    end)
+    
+    if not success then
+        return nil, "Invalid response"
+    end
+    
+    return data
+end
+
+function Getkey:CompleteWork(sessionId, taskProofs)
+    local response, err = Network:Request("/getkey/complete", {
+        session_id = sessionId,
+        task_proofs = taskProofs
+    })
+    
+    if not response then
+        return nil, err
+    end
+    
+    local success, data = pcall(function()
+        return HttpService:JSONDecode(response.Body)
+    end)
+    
+    if not success then
+        return nil, "Invalid response"
+    end
+    
+    return data
+end
+
+function Getkey:CheckStatus(sessionId)
+    local response, err = Network:Request("/getkey/status/" .. sessionId, {}, "GET")
+    
+    if not response then
+        return nil, err
+    end
+    
+    local success, data = pcall(function()
+        return HttpService:JSONDecode(response.Body)
+    end)
+    
+    if not success then
+        return nil, "Invalid response"
+    end
+    
+    return data
+end
+
+function Getkey:OpenWorkPage(sessionId)
+    local url = CONFIG.GETKEY_URL .. "?session=" .. sessionId
+    if syn and syn.queue_on_teleport then
+        syn.queue_on_teleport('game:GetService("Players").LocalPlayer:Kick("Please rejoin after completing the work")')
+    end
+    setclipboard(url)
+    return url
+end
+
+-- ==========================================
 -- ANTI-DEBUGGER / ANTI-TAMPER
 -- ==========================================
 local Security = {}
@@ -366,8 +451,8 @@ function Whitelist:PromptForKey()
     screenGui.Parent = CoreGui
     
     local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(0, 300, 0, 150)
-    frame.Position = UDim2.new(0.5, -150, 0.5, -75)
+    frame.Size = UDim2.new(0, 320, 0, 220)
+    frame.Position = UDim2.new(0.5, -160, 0.5, -110)
     frame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
     frame.BorderSizePixel = 0
     frame.Parent = screenGui
@@ -383,7 +468,7 @@ function Whitelist:PromptForKey()
     
     local input = Instance.new("TextBox")
     input.Size = UDim2.new(0.8, 0, 0, 35)
-    input.Position = UDim2.new(0.1, 0, 0.35, 0)
+    input.Position = UDim2.new(0.1, 0, 0.2, 0)
     input.PlaceholderText = "Enter your key..."
     input.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
     input.TextColor3 = Color3.new(1, 1, 1)
@@ -391,8 +476,8 @@ function Whitelist:PromptForKey()
     input.Parent = frame
     
     local submitBtn = Instance.new("TextButton")
-    submitBtn.Size = UDim2.new(0.6, 0, 0, 35)
-    submitBtn.Position = UDim2.new(0.2, 0, 0.65, 0)
+    submitBtn.Size = UDim2.new(0.35, 0, 0, 35)
+    submitBtn.Position = UDim2.new(0.1, 0, 0.45, 0)
     submitBtn.Text = "VERIFY"
     submitBtn.BackgroundColor3 = Color3.fromRGB(0, 120, 255)
     submitBtn.TextColor3 = Color3.new(1, 1, 1)
@@ -400,9 +485,19 @@ function Whitelist:PromptForKey()
     submitBtn.TextScaled = true
     submitBtn.Parent = frame
     
+    local getkeyBtn = Instance.new("TextButton")
+    getkeyBtn.Size = UDim2.new(0.35, 0, 0, 35)
+    getkeyBtn.Position = UDim2.new(0.55, 0, 0.45, 0)
+    getkeyBtn.Text = "GET KEY"
+    getkeyBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 0)
+    getkeyBtn.TextColor3 = Color3.new(1, 1, 1)
+    getkeyBtn.Font = Enum.Font.GothamBold
+    getkeyBtn.TextScaled = true
+    getkeyBtn.Parent = frame
+    
     local statusText = Instance.new("TextLabel")
     statusText.Size = UDim2.new(1, 0, 0, 20)
-    statusText.Position = UDim2.new(0, 0, 0.85, 0)
+    statusText.Position = UDim2.new(0, 0, 0.7, 0)
     statusText.BackgroundTransparency = 1
     statusText.Text = ""
     statusText.TextColor3 = Color3.new(1, 0.5, 0.5)
@@ -432,6 +527,59 @@ function Whitelist:PromptForKey()
             statusText.Text = "Invalid key or network error"
             statusText.TextColor3 = Color3.new(1, 0.3, 0.3)
         end
+    end)
+    
+    getkeyBtn.MouseButton1Click:Connect(function()
+        if not CONFIG.GETKEY_ENABLED then
+            statusText.Text = "Getkey is disabled"
+            statusText.TextColor3 = Color3.new(1, 0.5, 0.5)
+            return
+        end
+        
+        statusText.Text = "Requesting key..."
+        statusText.TextColor3 = Color3.new(1, 1, 1)
+        
+        local sessionId = Getkey:GenerateSessionId()
+        local requestData, err = Getkey:CreateRequest()
+        
+        if not requestData or not requestData.success then
+            statusText.Text = "Failed to request key: " .. (err or "Unknown error")
+            statusText.TextColor3 = Color3.new(1, 0.3, 0.3)
+            return
+        end
+        
+        -- Store session ID for later
+        _G.ProjectZeroGetkeySession = sessionId
+        
+        -- Open work page
+        local url = Getkey:OpenWorkPage(sessionId)
+        statusText.Text = "Complete tasks at: " .. url
+        statusText.TextColor3 = Color3.new(0, 1, 0)
+        
+        -- Wait for user to complete work
+        spawn(function()
+            local startTime = tick()
+            while tick() - startTime < 600 do -- 10 minute timeout
+                task.wait(5)
+                local statusData = Getkey:CheckStatus(sessionId)
+                if statusData and statusData.success and statusData.key then
+                    statusText.Text = "Key received! Please enter it..."
+                    statusText.TextColor3 = Color3.new(0, 1, 0)
+                    input.Text = statusData.key
+                    _G.ProjectZeroGetkeySession = nil
+                    return
+                end
+                if statusData and statusData.status == "approved" and statusData.key then
+                    statusText.Text = "Key received! Please enter it..."
+                    statusText.TextColor3 = Color3.new(0, 1, 0)
+                    input.Text = statusData.key
+                    _G.ProjectZeroGetkeySession = nil
+                    return
+                end
+            end
+            statusText.Text = "Work timeout. Please try again."
+            statusText.TextColor3 = Color3.new(1, 0.3, 0.3)
+        end)
     end)
     
     input.FocusLost:Connect(function(enterPressed)
@@ -570,5 +718,6 @@ return {
     HWID = HWID,
     Encryption = Encryption,
     Security = Security,
+    Getkey = Getkey,
     CONFIG = CONFIG
 }
