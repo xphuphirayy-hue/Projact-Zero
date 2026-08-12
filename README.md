@@ -27,4 +27,4 @@
 You can load the script hub directly in your executor using the following code:
 
 ```lua
-loadstring(game:HttpGet("[https://raw.githubusercontent.com/xphuphirayy-hue/Projact-Zero/refs/heads/main/loader/api/v2.lua](https://raw.githubusercontent.com/xphuphirayy-hue/Projact-Zero/refs/heads/main/loader/api/v2.lua)"))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/xphuphirayy-hue/Projact-Zero/refs/heads/main/loader/api/v2.lua"))()
