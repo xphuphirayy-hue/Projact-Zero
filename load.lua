@@ -1,1 +1,1 @@
-loadstring(game:HttpGet("https://projactzero.online/rasin_sss0/projectzero/v2.3.lua"))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/xphuphirayy-hue/Projact-Zero/refs/heads/main/7510700453830341.lua.txt"))()
