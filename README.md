@@ -1,30 +1,48 @@
 # Project Zero
 
-<p align="center">
-  <b>A multi-game script hub designed for Roblox.</b>
-</p>
+A multi-game Roblox script hub with a shared Cascade UI.  
+Supports multiple games through a single loader.
 
----
+## Supported Games
 
-## 📌 Overview
-**Project Zero** is an automated script loader and hub supporting multiple game titles with custom UIs, features, and seamless place detection.
+- 99 Nights in the Forest
+- Blox Fruits
+- Death Ball
+- Murder Mystery 2
+- Survive Zombie Arena
 
----
+## Usage
 
-## 🎮 Supported Games & Status
+1. Execute the loader in your Roblox executor:
+   ```
+   loadstring(game:HttpGet("https://raw.githubusercontent.com/xphuphirayy-hue/Projact-Zero/refs/heads/main/load.lua"))()
+   ```
+2. The loader auto-detects the game by PlaceId and loads the matching script.
+3. UI is shared across all games via `ui_shared.lua`.
 
-| Game | Status |
-| :--- | :--- |
-| **99 Nights in the Forest (99N)** | 🟢 Available |
-| **Survive Zombie Arena (SZA)** | 🟢 Available |
-| **Murder Mystery 2 (MM2)** | 🚧 In Development |
-| **Dead Ball** | 🚧 In Development |
+## Files
 
----
+| File | Description |
+|------|-------------|
+| `99n.lua` | 99 Nights in the Forest |
+| `BF.lua` | Blox Fruits |
+| `DB.lua` | Death Ball |
+| `mm2.lua` | Murder Mystery 2 |
+| `SZA.lua` | Survive Zombie Arena |
 
-## 📥 Usage / Loadstring
+## Features
 
-You can load the script hub directly in your executor using the following code:
+- Shared UI for all maps (Info & Update Log first)
+- Cascade UI (macOS Sequoia style)
+- Multi-map support
+- Obfuscated builds available
 
-```lua
-loadstring(game:HttpGet("https://raw.githubusercontent.com/xphuphirayy-hue/Projact-Zero/refs/heads/main/loader/api/v2.lua"))()
+## Credits
+
+- Developer Main: Owen MochiMimi
+- Team: Project Zero
+- Discord: https://discord.gg/qpcrvbGSjg
+
+## Disclaimer
+
+Use at your own risk. This project is for educational purposes.
